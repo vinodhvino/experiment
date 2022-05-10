@@ -1,3 +1,50 @@
-jbkjsdgckjs
-jkcbkjscbkj
-bsjncvsh
+import com.atlassian.jira.component.ComponentAccessor
+import com.atlassian.jira.issue.ModifiedValue
+import com.atlassian.jira.issue.util.DefaultIssueChangeHolder
+import com.onresolve.scriptrunner.runner.customisers.PluginModule
+import com.onresolve.scriptrunner.runner.customisers.WithPlugin
+import com.tempoplugin.accounts.account.api.AccountService
+import com.tempoplugin.accounts.account.api.Account
+
+@WithPlugin(["com.tempoplugin.tempo-accounts"])
+
+@PluginModule
+AccountService accountService
+
+def issue = event.issue
+
+// The issue is not an Epic, nothing to do here
+if (issue.issueType.name != "Epic") {
+    return
+}
+
+def loggedInUser = ComponentAccessor.jiraAuthenticationContext.loggedInUser
+def change = event.changeLog.getRelated("ChildChangeItem")?.find { it.field == "Account" }
+
+// a field other than the Account field updated, nothing to do here
+if (!change) {
+    return
+}
+
+def customFieldManager = ComponentAccessor.customFieldManager
+def accountField = customFieldManager.getCustomFieldObjects(issue).find { it.name == "Account" }
+def account = issue.getCustomFieldValue(accountField) as Account
+
+def issuesWithMisconfigurationAccount = []
+
+// Update the Account of all issues linked via Epic Link
+ComponentAccessor.issueLinkManager.getLinkCollection(issue, loggedInUser, false).getOutwardIssues("Epic-Story Link").each {
+    def selectedAccountOnLinkedIssue = it.getCustomFieldValue(accountField)
+
+    def accountsRegisteredForProject = (accountService.getAccountsByProject(it.projectObject.id).returnedValue as List<Account>)*.key
+    def globalAccounts = (accountService.globalAccounts.returnedValue as List<Account>)*.key
+
+    // if the account is configured for the target issue or it is a global account then update
+    if (account.key in accountsRegisteredForProject || account.key in globalAccounts) {
+        accountField.updateValue(null, it, new ModifiedValue(selectedAccountOnLinkedIssue, account), new DefaultIssueChangeHolder())
+    }
+    else {
+        // else store the issue key to a list so later we can inform the user for which issues the account field was not updated
+        issuesWithMisconfigurationAccount << it.key
+    }
+}
